@@ -5,9 +5,10 @@ import sqlite3
 import logging
 from datetime import datetime
 from abc import ABC, abstractmethod
+import psutil
 
 # Paths and settings
-LOG_FILE = "/var/log/persistence.log"
+LOG_FILE = "persistence.log"
 DB_FILE = "persistence_monitor.db"
 SCAN_INTERVAL = 60  # in seconds
 
@@ -99,6 +100,67 @@ class PasswdMonitor(PersistenceModuleBase):
             return ["/etc/passwd content changed"]
         return []
 
+class ShadowMonitor(PersistenceModuleBase):
+
+    SHADOW_FILE = "/etc/shadow"
+
+    def take_snapshot(self) -> dict:
+        try:
+            with open(self.SHADOW_FILE, 'r') as f:
+                return {"content": f.read()}
+        except Exception as e:
+            logging.error(f"Error reading {self.SHADOW_FILE}: {e}")
+            return {}
+
+    def compare_snapshot(self, previous_snapshot: dict) -> list:
+        current_snapshot = self.take_snapshot()
+        if not current_snapshot or not previous_snapshot:
+            return []
+
+        if current_snapshot["content"] != previous_snapshot.get("content"):
+            return ["/etc/shadow content changed"]
+        return []
+
+class GroupMonitor(PersistenceModuleBase):
+
+    GROUP_FILE = "/etc/group"
+
+    def take_snapshot(self) -> dict:
+        try:
+            with open(self.GROUP_FILE, 'r') as f:
+                return {"content": f.read()}
+        except Exception as e:
+            logging.error(f"Error reading {self.GROUP_FILE}: {e}")
+            return {}
+
+    def compare_snapshot(self, previous_snapshot: dict) -> list:
+        current_snapshot = self.take_snapshot()
+        if not current_snapshot or not previous_snapshot:
+            return []
+
+        if current_snapshot["content"] != previous_snapshot.get("content"):
+            return ["/etc/group content changed"]
+        return []
+
+class ProcessTreeMonitor(PersistenceModuleBase):
+
+    def take_snapshot(self) -> dict:
+        try:
+            process_tree = {p.pid: p.info for p in psutil.process_iter(['name', 'ppid'])}
+            return {"process_tree": process_tree}
+        except Exception as e:
+            logging.error(f"Error reading process tree: {e}")
+            return {}
+
+    def compare_snapshot(self, previous_snapshot: dict) -> list:
+        current_snapshot = self.take_snapshot()
+        if not current_snapshot or not previous_snapshot:
+            return []
+
+        if current_snapshot["process_tree"] != previous_snapshot.get("process_tree"):
+            return ["Process tree structure changed"]
+        return []
+
 class PersistenceMonitorService:
 
     def __init__(self, modules):
@@ -134,6 +196,9 @@ if __name__ == "__main__":
     # Register monitoring modules
     modules = [
         PasswdMonitor(),
+        ShadowMonitor(),
+        GroupMonitor(),
+        ProcessTreeMonitor(),
     ]
 
     service = PersistenceMonitorService(modules)
