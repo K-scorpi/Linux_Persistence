@@ -1,46 +1,36 @@
-# Docker setup for the Security Daemon
-# 1. Create a file named `Dockerfile`
-# 2. Content for the Dockerfile is provided below.
+# Use an official lightweight Debian image
+FROM debian:latest
 
-# Start with a Debian base image
-FROM debian:bullseye-slim
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Environment variables to reduce Python output buffering issues
-ENV PYTHONUNBUFFERED=1
+# Install necessary packages
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    net-tools \
+    systemd \
+    sqlite3 \
+    --no-install-recommends && rm -rf /var/lib/apt/lists/*
 
-# Install required system packages
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    python3 python3-pip procps passwd && \
-    rm -rf /var/lib/apt/lists/*
-
-# Set working directory inside the container
+# Set working directory
 WORKDIR /app
 
-# Copy the service code into the container
-COPY . .
-#COPY main.py . 
+# Copy project files
+COPY main.py /app/
 
-# Install necessary Python dependencies
+# Set permissions for log file
+RUN touch /var/log/persistence.log && chmod 666 /var/log/persistence.log
 
+# Install any additional Python dependencies if needed
+# --break-system-packages in latest version
+RUN pip3 install psutil --break-system-packages
 
-RUN pip3 install psutil
-
-# Ensure the logs directory exists and SQLite DB is set up
-RUN mkdir -p /var/log && touch /var/log/persistence.log
-
-#RUN chmod +x copy.sh 
-#RUN ./copy.sh
-
-#RUN watch -n 30 'cp /var/log/persistence.log /app/persistence.log' & tail -f /dev/null
-
-#RUN watch -n 1 'cp --parents /var/log/persistence.log /app/persistence.log'
-# Add a test user creation to trigger daemon events for monitoring
-RUN useradd testuser && \
-    echo "testuser:testpassword123" | chpasswd
+# Run the Python security daemon as the entrypoint process
+ENTRYPOINT ["python3", "/app/main.py"]
 
 # Run the persistence daemon
-CMD ["python3", "main.py"]
+#CMD ["python3", "main.py"]
 
 # Instructions for building and running:
 # 1. Build the Docker image:
@@ -49,4 +39,3 @@ CMD ["python3", "main.py"]
 # 2. Run the Docker container:
 # v1 docker run --rm -it --name security-daemon --cap-add SYS_ADMIN security-daemon
 # v2 docker run --rm -it -v ./:/app --name security-daemon --cap-add SYS_ADMIN security-daemon
-# The daemon should detect the user creation and password change upon startup.

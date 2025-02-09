@@ -1,205 +1,125 @@
 import os
 import time
-import json
 import sqlite3
-import logging
-from datetime import datetime
-from abc import ABC, abstractmethod
 import psutil
+import subprocess
+from multiprocessing import Process
 
-# Paths and settings
+# Constants
+PERSISTENCE_DB = "persistence_data.db"
 LOG_FILE = "persistence.log"
-DB_FILE = "persistence_monitor.db"
-SCAN_INTERVAL = 60  # in seconds
+CHECK_INTERVAL = 30  # Time in seconds between checks
 
-# Configure logging
-logging.basicConfig(
-    filename=LOG_FILE,
-    level=logging.INFO,
-    format='[%(asctime)s] %(message)s'
-)
+# Initialize SQLite database
+conn = sqlite3.connect(PERSISTENCE_DB)
+cursor = conn.cursor()
 
-# Database setup
-def initialize_database():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS snapshots (
-            id INTEGER PRIMARY KEY,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            module TEXT,
-            snapshot_data TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS diffs (
-            id INTEGER PRIMARY KEY,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            module TEXT,
-            differences TEXT
-        )
-    ''')
+# Create necessary tables
+cursor.execute('''CREATE TABLE IF NOT EXISTS system_snapshots (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    passwd TEXT,
+                    shadow TEXT,
+                    group_file TEXT,
+                    open_ports TEXT,
+                    autostart_services TEXT)''')
+conn.commit()
+
+
+def log_event(message):
+    """Log events to the log file."""
+    with open(LOG_FILE, "a") as log_file:
+        log_file.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {message}\n")
+
+
+def get_file_content(path):
+    """Read and return file content."""
+    try:
+        with open(path, 'r') as file:
+            return file.read()
+    except FileNotFoundError:
+        return ""
+
+
+def get_open_ports():
+    """Get a list of open network ports."""
+    try:
+        result = subprocess.run(['netstat', '-tuln'], capture_output=True, text=True)
+        return result.stdout.strip()
+    except Exception as e:
+        log_event(f"Error getting open ports: {e}")
+        return ""
+
+
+def get_autostart_services():
+    """Get a list of services set to autostart."""
+    try:
+        result = subprocess.run(['systemctl', 'list-unit-files', '--type=service', '--state=enabled'],
+                                capture_output=True, text=True)
+        return result.stdout.strip()
+    except Exception as e:
+        log_event(f"Error getting autostart services: {e}")
+        return ""
+
+
+def take_snapshot():
+    """Take a snapshot of system files and states."""
+    passwd_content = get_file_content('/etc/passwd')
+    shadow_content = get_file_content('/etc/shadow')
+    group_content = get_file_content('/etc/group')
+    open_ports = get_open_ports()
+    autostart_services = get_autostart_services()
+
+    cursor.execute('''INSERT INTO system_snapshots (passwd, shadow, group_file, open_ports, autostart_services)
+                      VALUES (?, ?, ?, ?, ?)''',
+                   (passwd_content, shadow_content, group_content, open_ports, autostart_services))
     conn.commit()
-    conn.close()
 
-# Base class for persistence monitoring modules
-class PersistenceModuleBase(ABC):
+    log_event("System snapshot taken.")
 
-    @abstractmethod
-    def take_snapshot(self) -> dict:
-        pass
 
-    @abstractmethod
-    def compare_snapshot(self, previous_snapshot: dict) -> list:
-        pass
+def detect_changes():
+    """Compare the latest two snapshots and log any differences."""
+    cursor.execute('''SELECT * FROM system_snapshots ORDER BY id DESC LIMIT 2''')
+    snapshots = cursor.fetchall()
 
-    def log_differences(self, differences: list):
-        if differences:
-            message = f"{self.__class__.__name__}: {differences}"
-            logging.info(message)
-            self.save_differences_to_db(differences)
+    if len(snapshots) < 2:
+        return
 
-    def save_snapshot_to_db(self, snapshot_data: dict):
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO snapshots (module, snapshot_data) VALUES (?, ?)",
-            (self.__class__.__name__, json.dumps(snapshot_data))
-        )
-        conn.commit()
-        conn.close()
+    latest, previous = snapshots[0], snapshots[1]
+    differences = []
 
-    def save_differences_to_db(self, differences: list):
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO diffs (module, differences) VALUES (?, ?)",
-            (self.__class__.__name__, json.dumps(differences))
-        )
-        conn.commit()
-        conn.close()
+    if latest[2] != previous[2]:
+        differences.append("Changes detected in /etc/passwd.")
+    if latest[3] != previous[3]:
+        differences.append("Changes detected in /etc/shadow.")
+    if latest[4] != previous[4]:
+        differences.append("Changes detected in /etc/group.")
+    if latest[5] != previous[5]:
+        differences.append("Changes detected in open ports.")
+    if latest[6] != previous[6]:
+        differences.append("Changes detected in autostart services.")
 
-class PasswdMonitor(PersistenceModuleBase):
+    for difference in differences:
+        log_event(difference)
 
-    PASSWD_FILE = "/etc/passwd"
 
-    def take_snapshot(self) -> dict:
-        try:
-            with open(self.PASSWD_FILE, 'r') as f:
-                return {"content": f.read()}
-        except Exception as e:
-            logging.error(f"Error reading {self.PASSWD_FILE}: {e}")
-            return {}
+def run_daemon():
+    """Main daemon loop."""
+    log_event("Security daemon started.")
+    while True:
+        take_snapshot()
+        detect_changes()
+        time.sleep(CHECK_INTERVAL)
 
-    def compare_snapshot(self, previous_snapshot: dict) -> list:
-        current_snapshot = self.take_snapshot()
-        if not current_snapshot or not previous_snapshot:
-            return []
-
-        if current_snapshot["content"] != previous_snapshot.get("content"):
-            return ["/etc/passwd content changed"]
-        return []
-
-class ShadowMonitor(PersistenceModuleBase):
-
-    SHADOW_FILE = "/etc/shadow"
-
-    def take_snapshot(self) -> dict:
-        try:
-            with open(self.SHADOW_FILE, 'r') as f:
-                return {"content": f.read()}
-        except Exception as e:
-            logging.error(f"Error reading {self.SHADOW_FILE}: {e}")
-            return {}
-
-    def compare_snapshot(self, previous_snapshot: dict) -> list:
-        current_snapshot = self.take_snapshot()
-        if not current_snapshot or not previous_snapshot:
-            return []
-
-        if current_snapshot["content"] != previous_snapshot.get("content"):
-            return ["/etc/shadow content changed"]
-        return []
-
-class GroupMonitor(PersistenceModuleBase):
-
-    GROUP_FILE = "/etc/group"
-
-    def take_snapshot(self) -> dict:
-        try:
-            with open(self.GROUP_FILE, 'r') as f:
-                return {"content": f.read()}
-        except Exception as e:
-            logging.error(f"Error reading {self.GROUP_FILE}: {e}")
-            return {}
-
-    def compare_snapshot(self, previous_snapshot: dict) -> list:
-        current_snapshot = self.take_snapshot()
-        if not current_snapshot or not previous_snapshot:
-            return []
-
-        if current_snapshot["content"] != previous_snapshot.get("content"):
-            return ["/etc/group content changed"]
-        return []
-
-class ProcessTreeMonitor(PersistenceModuleBase):
-
-    def take_snapshot(self) -> dict:
-        try:
-            process_tree = {p.pid: p.info for p in psutil.process_iter(['name', 'ppid'])}
-            return {"process_tree": process_tree}
-        except Exception as e:
-            logging.error(f"Error reading process tree: {e}")
-            return {}
-
-    def compare_snapshot(self, previous_snapshot: dict) -> list:
-        current_snapshot = self.take_snapshot()
-        if not current_snapshot or not previous_snapshot:
-            return []
-
-        if current_snapshot["process_tree"] != previous_snapshot.get("process_tree"):
-            return ["Process tree structure changed"]
-        return []
-
-class PersistenceMonitorService:
-
-    def __init__(self, modules):
-        self.modules = modules
-
-    def load_last_snapshot(self, module_name: str) -> dict:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT snapshot_data FROM snapshots WHERE module = ? ORDER BY timestamp DESC LIMIT 1",
-            (module_name,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-        return json.loads(row[0]) if row else {}
-
-    def run(self):
-        logging.info("Persistence Monitor Service started.")
-        while True:
-            for module in self.modules:
-                previous_snapshot = self.load_last_snapshot(module.__class__.__name__)
-                current_snapshot = module.take_snapshot()
-                module.save_snapshot_to_db(current_snapshot)
-
-                differences = module.compare_snapshot(previous_snapshot)
-                module.log_differences(differences)
-
-            time.sleep(SCAN_INTERVAL)
 
 if __name__ == "__main__":
-    initialize_database()
+    # Run as a background process
+    daemon_process = Process(target=run_daemon)
+    daemon_process.daemon = True
+    daemon_process.start()
+    log_event("Daemon process started successfully.")
 
-    # Register monitoring modules
-    modules = [
-        PasswdMonitor(),
-        ShadowMonitor(),
-        GroupMonitor(),
-        ProcessTreeMonitor(),
-    ]
-
-    service = PersistenceMonitorService(modules)
-    service.run()
+    # Keep the main program alive
+    while True:
+        time.sleep(1)
