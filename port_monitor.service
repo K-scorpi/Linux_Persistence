@@ -1,0 +1,10 @@
+[Unit]
+Description=Port Monitor Daemon
+After=network.target
+[Service]
+User=root # Или пользователя, имеющего права на запуск сервисов
+WorkingDirectory=/app # Замените на путь к вашему скрипту
+ExecStart=/usr/bin/python3 /app/port_monitor.py # Замените на путь к вашему скрипту
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
