@@ -1,4 +1,4 @@
-# Use an official lightweight Debian image
+# Use Debian image
 FROM debian:12.5
 
 # Set environment variables
@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 EXPOSE 22:2021
 EXPOSE 80
 
-# Install necessary packages
+# Install packages
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -30,10 +30,10 @@ WORKDIR /app
 
 RUN echo "server { listen 80 default_server; listen [::]:80 default_server; return 200 'OK'; }" > /etc/nginx/sites-available/default
 
-# Не забудьте создать символьную ссылку
+# Не забудем создать символьную ссылку
 RUN ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
 
-# Copy project files
+# Copy files
 COPY ./monitoring.py /app/monitoring.py
 RUN chmod +x monitoring.py
 
@@ -49,10 +49,13 @@ COPY ./port_monitor.py /app/port_monitor.py
 #COPY ./port_monitor.service /etc/systemd/system/port_monitor.service
 RUN chmod +x port_monitor.py
 
+COPY ./make_user.py /app/make_user.py
+RUN chmod +x make_user.py
+
 COPY ./script.sh /app/script.sh
 RUN chmod +x /app/script.sh
 
-
+#V1 port_scan
 #RUN systemctl enable port_monitor.service 
 #RUN systemctl start port_monitor.service
 
@@ -60,10 +63,10 @@ RUN chmod +x /app/script.sh
 RUN echo "Monitoring start"
 
 CMD ["bash", "./script.sh"]
+
 #CMD ["python3", "port_monitor.py"]
 #& python3 monitoring.py & wait"]
 #ENTRYPOINT ["python3", "/app/monitoring.py"]
-
 #CMD ["python3", "main.py"]
 
 # Instructions for building and running:
