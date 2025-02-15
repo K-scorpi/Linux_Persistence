@@ -22,7 +22,10 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS system_snapshots (
                     shadow TEXT,
                     group_file TEXT,
                     open_ports TEXT,
-                    autostart_services TEXT)''')
+                    autostart_services TEXT,
+                    security_logs TEXT,
+                    recent_files TEXT,
+                    process_info TEXT)''')
 conn.commit()
 
 
@@ -62,6 +65,35 @@ def get_autostart_services():
         return ""
 
 
+def get_security_logs():
+    """Get contents of security logs."""
+    log_paths = ["/var/log/auth.log", "/var/log/secure", "/var/log/wtmp", "/var/log/btmp"]
+    logs = {}
+    for log in log_paths:
+        logs[log] = get_file_content(log)
+    return str(logs)
+
+
+def get_recently_modified_files():
+    """Find recently modified files in the last 2 days."""
+    try:
+        result = subprocess.run(['find', '/', '-mtime', '-2', '-ls'], capture_output=True, text=True)
+        return result.stdout.strip()
+    except Exception as e:
+        log_event(f"Error getting recently modified files: {e}")
+        return ""
+
+
+def get_process_info():
+    """Get information about running processes."""
+    try:
+        result = subprocess.run(['ps', 'auxwf'], capture_output=True, text=True)
+        return result.stdout.strip()
+    except Exception as e:
+        log_event(f"Error getting process information: {e}")
+        return ""
+
+
 def take_snapshot():
     """Take a snapshot of system files and states."""
     passwd_content = get_file_content('/etc/passwd')
@@ -69,10 +101,15 @@ def take_snapshot():
     group_content = get_file_content('/etc/group')
     open_ports = get_open_ports()
     autostart_services = get_autostart_services()
+    security_logs = get_security_logs()
+    recent_files = get_recently_modified_files()
+    process_info = get_process_info()
 
-    cursor.execute('''INSERT INTO system_snapshots (passwd, shadow, group_file, open_ports, autostart_services)
-                      VALUES (?, ?, ?, ?, ?)''',
-                   (passwd_content, shadow_content, group_content, open_ports, autostart_services))
+    cursor.execute('''INSERT INTO system_snapshots (passwd, shadow, group_file, open_ports, autostart_services,
+                      security_logs, recent_files, process_info)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                   (passwd_content, shadow_content, group_content, open_ports, autostart_services,
+                    security_logs, recent_files, process_info))
     conn.commit()
 
     log_event("System snapshot taken.")
@@ -99,6 +136,12 @@ def detect_changes():
         differences.append("Changes detected in open ports.")
     if latest[6] != previous[6]:
         differences.append("Changes detected in autostart services.")
+    if latest[7] != previous[7]:
+        differences.append("Changes detected in security logs.")
+    if latest[8] != previous[8]:
+        differences.append("Changes detected in recently modified files.")
+    if latest[9] != previous[9]:
+        differences.append("Changes detected in running processes.")
 
     for difference in differences:
         log_event(difference)
